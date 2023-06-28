@@ -13,7 +13,10 @@ import qrcode
 from reportlab.pdfgen import canvas
 import os
 import shutil
-
+import pygame
+import pygame.camera
+from pygame.locals import *
+from pyzbar import pyzbar
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -258,6 +261,12 @@ class AddFileModule(QWidget):
         for input_field in self.code_inputs:
             input_field.clear()
 
+        parent_widget = self.parent()
+        if isinstance(parent_widget, QWidget):
+            for child_widget in parent_widget.children():
+                if isinstance(child_widget, ReturnFileModule):
+                    child_widget.load_suggestions()
+
 
 class EditFileModule(QWidget):
     def __init__(self):
@@ -301,7 +310,6 @@ class EditFileModule(QWidget):
         save_button.clicked.connect(self.save_file)
         layout.addWidget(save_button)
 
-        # Initialize variables
         self.selected_item = None
 
         self.setStyleSheet("""
@@ -433,15 +441,13 @@ class GetFileModule(QtWidgets.QWidget):
 
         self.frame = QtWidgets.QFrame(self)
         self.frame.setFixedSize(200, 200)
-        self.frame.setStyleSheet("background-color: black;")
+        self.frame.setStyleSheet("background-color: cyan;")
 
-        # Create a horizontal layout to center the frame horizontally
-        hlayout = QtWidgets.QHBoxLayout()
-        hlayout.addStretch(1)  # Add stretch to align the frame to the center horizontally
-        hlayout.addWidget(self.frame)
-        hlayout.addStretch(1)  # Add stretch to align the frame to the center horizontally
+        self.label = QtWidgets.QLabel(self.frame)
+        self.label.setGeometry(QtCore.QRect(0, 0, 200, 200))
+        self.label.setAlignment(QtCore.Qt.AlignCenter)
 
-        layout.addLayout(hlayout)
+        layout.addWidget(self.frame)
 
         search_label = QtWidgets.QLabel("Qidirish:")
         self.search_input = QtWidgets.QLineEdit()
@@ -452,9 +458,9 @@ class GetFileModule(QtWidgets.QWidget):
         get_button.clicked.connect(self.get_file)
         layout.addWidget(get_button)
 
-        qr_button = QtWidgets.QPushButton("QR kod orqali olish")
-        qr_button.clicked.connect(self.scan_qr_code)
-        layout.addWidget(qr_button)
+        self.qr_button = QtWidgets.QPushButton("QR kod orqali olish")
+        self.qr_button.clicked.connect(self.scan_qr_code)
+        layout.addWidget(self.qr_button)
 
         self.file_completer = QtWidgets.QCompleter()
         self.file_completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
@@ -468,6 +474,37 @@ class GetFileModule(QtWidgets.QWidget):
         self.load_file_suggestions()
 
         self.search_input.textChanged.connect(self.filter_file_suggestions)
+
+        self.camera = None
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.capture_frame)
+
+        self.qr_button.setEnabled(True)
+
+        pygame.init()
+        pygame.camera.init()
+
+    def capture_frame(self):
+        if self.camera:
+            frame = self.camera.get_image()
+            qimage = QtGui.QImage(frame.get_buffer(), frame.get_width(), frame.get_height(), QtGui.QImage.Format_RGB888)
+            pixmap = QtGui.QPixmap.fromImage(qimage.rgbSwapped())
+            self.label.setPixmap(pixmap.scaled(self.label.size(), QtCore.Qt.KeepAspectRatio))
+
+            gray_image = pygame.surfarray.pixels3d(frame).swapaxes(0, 1)
+
+            qr_codes = pyzbar.decode(gray_image)
+
+            for qr_code in qr_codes:
+                data = qr_code.data.decode("utf-8")
+                data = data.split('_')[0]
+                self.search_input.setText(data)
+
+                self.timer.stop()
+                self.camera.stop()
+                self.label.clear()
+
+                self.qr_button.setEnabled(True)
 
     def load_file_suggestions(self):
         conn = sqlite3.connect('database.db')
@@ -491,40 +528,21 @@ class GetFileModule(QtWidgets.QWidget):
         if not query:
             return
 
-        conn = sqlite3.connect('database.db')
-        c = conn.cursor()
-
-        c.execute("SELECT status, olingan_vaqti FROM files WHERE nomi = ? OR code = ?", (query, query))
-        result = c.fetchone()
-
-        if result:
-            status = result[0]
-            olingan_vaqti = result[1]
-
-            if status == 1:
-                QtWidgets.QMessageBox.information(self, "Fayl olingan", "Bu fayl olingan.")
-            else:
-                acquisition_time = QtCore.QDateTime.currentDateTime().toString(QtCore.Qt.ISODate)
-                if olingan_vaqti:
-                    olingan_vaqti = olingan_vaqti.split(',')
-                    olingan_vaqti.append(acquisition_time)
-                    olingan_vaqti = ','.join(olingan_vaqti)
-                else:
-                    olingan_vaqti = acquisition_time
-
-                c.execute("UPDATE files SET status = 1, olingan_vaqti = ? WHERE nomi = ? OR code = ?",
-                          (olingan_vaqti, query, query))
-                conn.commit()
-
-                QtWidgets.QMessageBox.information(self, "Fayl olindi", "OLINDI.")
-
-        conn.close()
-
-        self.search_input.clear()
 
     def scan_qr_code(self):
-        pass
+        cameras = pygame.camera.list_cameras()
+        if cameras:
+            self.camera = pygame.camera.Camera(cameras[0], (200, 200))
+            self.camera.start()
+            self.timer.start(30)
 
+        self.qr_button.setEnabled(False)
+
+    def closeEvent(self, event):
+        if self.camera:
+            self.timer.stop()
+            self.camera.stop()
+        event.accept()
 
 
 class PDFModule(QtWidgets.QWidget):
@@ -911,7 +929,6 @@ class DisplayDialog(QDialog):
         pdf_button.clicked.connect(self.generate_pdf)
         layout.addWidget(pdf_button)
 
-        # Add Browse History button
         browse_button = QPushButton("Tarix")
         browse_button.clicked.connect(self.browse_history)
         layout.addWidget(browse_button)
@@ -949,10 +966,10 @@ class DisplayDialog(QDialog):
                 self.history_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
                 self.history_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
                 self.history_widget.setReadOnly(True)
-                self.history_widget.setAlignment(Qt.AlignCenter)  # Center the message label
-                self.history_widget.setTextInteractionFlags(Qt.NoTextInteraction)  # Disable text interaction
-                self.history_widget.setPlainText("")  # Clear any existing text
-                self.history_widget.insertPlainText(message_label.text())  # Insert the message label text
+                self.history_widget.setAlignment(Qt.AlignCenter)
+                self.history_widget.setTextInteractionFlags(Qt.NoTextInteraction)
+                self.history_widget.setPlainText("")
+                self.history_widget.insertPlainText(message_label.text())
             else:
                 history = history.split(',')
                 history_text = '\n'.join(history)
